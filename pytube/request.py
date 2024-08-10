@@ -4,10 +4,11 @@ import json
 import logging
 import re
 import socket
+import ssl
 from functools import lru_cache
 from urllib import parse
 from urllib.error import URLError
-from urllib.request import Request, urlopen
+from urllib.request import Request, urlopen, build_opener, HTTPSHandler, HTTPRedirectHandler
 
 from pytube.exceptions import RegexMatchError, MaxRetriesExceeded
 from pytube.helpers import regex_search
@@ -15,6 +16,24 @@ from pytube.helpers import regex_search
 logger = logging.getLogger(__name__)
 default_range_size = 9437184  # 9MB
 
+class CustomRedirectHandler(HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        # Substitute the host name in the new URL with its IP address
+        newurl_parsed = parse.urlparse(newurl)
+        new_ip_address = socket.gethostbyname(newurl_parsed.hostname)
+        new_netloc = new_ip_address if newurl_parsed.port is None else f"{new_ip_address}:{newurl_parsed.port}"
+        newurl = newurl_parsed._replace(netloc=new_netloc).geturl()
+        # Create a new request with the modified URL and original Host header
+        new_request = Request(newurl, headers=req.headers, method=req.get_method())
+        new_request.add_header('Host', newurl_parsed.hostname)
+        return new_request
+
+def _create_ssl_context():
+    # Create an SSL context
+    context = ssl.create_default_context()
+    context.check_hostname = False
+    context.verify_mode = ssl.CERT_NONE
+    return context
 
 def _execute_request(
     url,
@@ -30,11 +49,23 @@ def _execute_request(
         # encode data for request
         if not isinstance(data, bytes):
             data = bytes(json.dumps(data), encoding="utf-8")
-    if url.lower().startswith("http"):
+    if url.lower().startswith("https"):
+        # Substitute the host name in the URL with its IP address
+        url_parsed = parse.urlparse(url)
+        ip_address = socket.gethostbyname(url_parsed.hostname)
+        new_netloc = ip_address if url_parsed.port is None else f"{ip_address}:{url_parsed.port}"
+        url = url_parsed._replace(netloc=new_netloc).geturl()
+        # Create the request with the modified URL and original Host header
         request = Request(url, headers=base_headers, method=method, data=data)
+        request.add_header('Host', url_parsed.hostname)
+        ssl_context = _create_ssl_context()
+        opener = build_opener(CustomRedirectHandler(), HTTPSHandler(context=ssl_context))
+        return opener.open(request, timeout=timeout)  # nosec
+    elif url.lower().startswith("http"):
+        request = Request(url, headers=base_headers, method=method, data=data)
+        return urlopen(request, timeout=timeout)  # nosec
     else:
         raise ValueError("Invalid URL")
-    return urlopen(request, timeout=timeout)  # nosec
 
 
 def get(url, extra_headers=None, timeout=socket._GLOBAL_DEFAULT_TIMEOUT):
