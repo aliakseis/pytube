@@ -17,7 +17,15 @@ logger = logging.getLogger(__name__)
 default_range_size = 9437184  # 9MB
 
 class CustomRedirectHandler(HTTPRedirectHandler):
+    def __init__(self, max_redirects=10):
+        self.max_redirects = max_redirects
+        self.redirect_count = 0
+
     def redirect_request(self, req, fp, code, msg, headers, newurl):
+        if self.redirect_count >= self.max_redirects:
+            raise MaxRetriesExceeded(f"Exceeded maximum number of redirects: {self.max_redirects}")
+        self.redirect_count += 1
+
         # Substitute the host name in the new URL with its IP address
         newurl_parsed = parse.urlparse(newurl)
         new_ip_address = socket.gethostbyname(newurl_parsed.hostname)
